@@ -298,6 +298,135 @@ tbody td{padding:7px 10px}
 .svc-add-btn{background:none;border:2px dashed #1877F2;color:#1877F2;border-radius:8px;padding:8px 16px;font-size:12px;font-weight:600;cursor:pointer;width:100%;margin-top:6px;transition:all .2s}
 .svc-add-btn:hover{background:#f0f5ff}
 </style>
+
+<!-- ═══ SUPABASE INTEGRATION ═══ -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+/* Credenziali iniettate da GitHub Actions al deploy.
+   Nel repo questi sono placeholder — mai le chiavi reali. */
+var _SUPA_URL = '%%SUPABASE_URL%%';
+var _SUPA_KEY = '%%SUPABASE_PUBLISHABLE_KEY%%';
+var _sb  = null;
+var _dbOk = false;
+
+/* ── INIT ── */
+function _sbInit(){
+  if(!_SUPA_URL || _SUPA_URL.indexOf('%%') >= 0){
+    console.info('[ADV] Supabase offline — uso localStorage');
+    _dbBadge('offline');
+    return;
+  }
+  try{
+    _sb = supabase.createClient(_SUPA_URL, _SUPA_KEY);
+    _dbBadge('connecting');
+    _sb.from('impostazioni').select('id').limit(1).then(function(r){
+      if(r.error){ _dbBadge('error'); console.error('[ADV]', r.error.message); }
+      else{ _dbOk = true; _dbBadge('online'); _sbSyncDown(); }
+    });
+  }catch(e){ _dbBadge('error'); console.error(e); }
+}
+
+function _dbBadge(s){
+  var el = document.getElementById('_sbBadge');
+  if(!el) return;
+  var map = { online:'🟢 DB', connecting:'🟡 DB', error:'🔴 DB', offline:'⚪ DB' };
+  el.textContent = map[s] || s;
+}
+
+/* ── MAP Quote JS → DB ── */
+function _qToDB(q){
+  return {
+    id: q.id,                          type: q.type||'preventivo',
+    client_name:  q.clientName||'',    client_email: q.clientEmail||'',
+    client_vat:   q.clientVat||'',     client_phone: q.clientPhone||'',
+    services:     q.services||[],      subtotal:     q.subtotal||0,
+    iva_rate:     q.ivaRate||0.22,     iva_amt:      q.ivaAmt||0,
+    total:        q.total||0,          discount:     q.discount||0,
+    date_emesso:  q.dateEmesso||null,  date_validity:q.dateValidity||null,
+    status:       q.status||'emesso',  status_dates: q.statusDates||{},
+    notes:        q.notes||'',         conditions:   q.conditions||''
+  };
+}
+
+/* ── MAP Quote DB → JS ── */
+function _qFromDB(d){
+  return {
+    id: d.id,                          type: d.type||'preventivo',
+    clientName:  d.client_name,        clientEmail: d.client_email||'',
+    clientVat:   d.client_vat||'',     clientPhone: d.client_phone||'',
+    services:    d.services||[],       subtotal:    d.subtotal||0,
+    ivaRate:     d.iva_rate||0.22,     ivaAmt:      d.iva_amt||0,
+    total:       d.total||0,           discount:    d.discount||0,
+    dateEmesso:  d.date_emesso||'',    dateValidity:d.date_validity||'',
+    status:      d.status||'emesso',   statusDates: d.status_dates||{},
+    notes:       d.notes||'',          conditions:  d.conditions||''
+  };
+}
+
+/* ── MAP Settings ── */
+function _sToDB(s){
+  return {
+    id:'default',
+    email_commerciale:s.emailCommerciale||'', email_admin:s.emailAdmin||'',
+    email_titolare:s.emailTitolare||'',       slack_webhook:s.slackWebhook||'',
+    slack_canale:s.slackCanale||'',           nome_azienda:s.nomeAzienda||'',
+    sede_azienda:s.sedeAzienda||'',           piva:s.piva||'',
+    email_azienda:s.emailAzienda||'',         legale_rapp:s.legaleRapp||'',
+    legale_qualita:s.legaleQualita||'',       giorni_firma:s.giorniFirma||3,
+    giorni_pagamento:s.giorniPagamento||3,    cond_pratiche:s.condPratiche||'',
+    fu1_days:s.fu1Days||3,                    fu2_days:s.fu2Days||7,
+    fatt_days:s.fattDays||0
+  };
+}
+function _sFromDB(d){
+  return {
+    emailCommerciale:d.email_commerciale||'', emailAdmin:d.email_admin||'',
+    emailTitolare:d.email_titolare||'',       slackWebhook:d.slack_webhook||'',
+    slackCanale:d.slack_canale||'#preventivi',
+    nomeAzienda:d.nome_azienda||'Adventure Business Consulting S.r.l.',
+    sedeAzienda:d.sede_azienda||'Melegnano (MI)',
+    piva:d.piva||'08923661212',               emailAzienda:d.email_azienda||'',
+    legaleRapp:d.legale_rapp||'',             legaleQualita:d.legale_qualita||'Amministratore Unico',
+    giorniFirma:d.giorni_firma||3,            giorniPagamento:d.giorni_pagamento||3,
+    condPratiche:d.cond_pratiche||'',         fu1Days:d.fu1_days||3,
+    fu2Days:d.fu2_days||7,                    fattDays:d.fatt_days||0
+  };
+}
+
+/* ── SYNC DOWN: Supabase → localStorage → UI ── */
+function _sbSyncDown(){
+  if(!_dbOk) return;
+  _sb.from('impostazioni').select('*').eq('id','default').single().then(function(r){
+    if(!r.error && r.data)
+      localStorage.setItem('adv_settings', JSON.stringify(_sFromDB(r.data)));
+  });
+  _sb.from('preventivi').select('*').order('created_at',{ascending:false}).then(function(r){
+    if(!r.error && r.data && r.data.length > 0){
+      localStorage.setItem('adv_quotes', JSON.stringify(r.data.map(_qFromDB)));
+      if(typeof renderRegistro==='function') renderRegistro();
+      if(typeof updateAlertBadge==='function') updateAlertBadge();
+    }
+  });
+}
+
+/* ── CRUD ── */
+function _sbSave(q){
+  if(!_dbOk) return;
+  _sb.from('preventivi').upsert(_qToDB(q));
+}
+function _sbDelete(id){
+  if(!_dbOk) return;
+  _sb.from('preventivi').delete().eq('id',id);
+}
+function _sbStatus(id,status,dates){
+  if(!_dbOk) return;
+  _sb.from('preventivi').update({status:status,status_dates:dates}).eq('id',id);
+}
+function _sbSettings(s){
+  if(!_dbOk) return;
+  _sb.from('impostazioni').upsert(_sToDB(s));
+}
+</script>
 </head>
 <body>
 <div class="header">
@@ -1056,6 +1185,7 @@ function saveSettings(){
     condPratiche:gv('sCondPratiche'),condContabilita:gv('sCondContabilita')
   };
   localStorage.setItem('adv_settings',JSON.stringify(s));
+  _sbSettings(s);
   showToast('\u2705 Impostazioni salvate!');
 }
 function fillSettingsForm(){
@@ -1077,7 +1207,7 @@ function fillSettingsForm(){
 /* ── STORAGE ── */
 function loadQuotes(){ var d=localStorage.getItem('adv_quotes'); return d?JSON.parse(d):[]; }
 function saveQuotes(q){ localStorage.setItem('adv_quotes',JSON.stringify(q)); }
-function addQuote(qdata){ var q=loadQuotes(); q.unshift(qdata); saveQuotes(q); }
+function addQuote(qdata){ var q=loadQuotes(); q.unshift(qdata); saveQuotes(q); _sbSave(qdata); }
 
 /* ── TABS ── */
 function switchTab(t){
@@ -2052,6 +2182,7 @@ function changeStatus(qId,newStatus){
   if(!q) return;
   q.status=newStatus; q.statusDates[newStatus]=todayStr(); quotes[idx]=q;
   saveQuotes(quotes); renderRegistro(); updateAlertBadge();
+  _sbStatus(q.id, q.status, q.statusDates);
   if(newStatus==='firmato' && confirm('Preventivo firmato!\nNotificare l\u2019amministrazione per emettere la fattura?')) notificaEmettiFattura(q);
   if(newStatus==='pagato') showToast('\ud83c\udf89 Pagamento ricevuto! Pratica completata.');
 }
@@ -2154,6 +2285,7 @@ function deleteQuote(id){
   if(!confirm('Eliminare '+id+'?')) return;
   saveQuotes(loadQuotes().filter(function(x){return x.id!==id;}));
   renderRegistro(); updateAlertBadge();
+  _sbDelete(id);
 }
 
 
@@ -3639,6 +3771,7 @@ window.onload=function(){
   initDates(); buildTable(); updateTotals(); updateAlertBadge();
   renderBundleBar();
   loadConditionsFromSettings();
+  setTimeout(_sbInit, 300);
   setTimeout(function(){
     var alerts=checkAlerts();
     var fus=checkFollowUps();
